@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_first.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,8 +48,20 @@ jobs:
         with:
           path: site
 
+      # 업로드 직후 "No artifacts named github-pages" 로 가끔 실패한다(GitHub 쪽 일시 오류, 2026-11-26).
+      # 한 번 실패하면 잠깐 기다렸다 다시 배포한다.
       - name: deploy
+        id: deploy_first
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: wait before retry
+        if: steps.deploy_first.outcome == 'failure'
+        run: sleep 30
+
+      - name: deploy (retry)
         id: deploy
+        if: steps.deploy_first.outcome == 'failure'
         uses: actions/deploy-pages@v4
 
       # 공개 저장소의 예약 실행은 커밋이 60일 없으면 GitHub가 멈춘다. 45일마다 빈 커밋 대신 파일 하나를 갱신한다.
