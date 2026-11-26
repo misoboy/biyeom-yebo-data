@@ -1,0 +1,73 @@
+name: build
+
+on:
+  schedule:
+    # 매시 35분(UTC 기준이지만 분만 쓰므로 KST도 35분). 에어코리아 정시 자료가 15~20분쯤 올라온다.
+    - cron: "35 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["scripts/**", "data/**", "tests/**", ".github/workflows/**"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: tests
+        run: python -m unittest discover -s tests
+
+      - name: build data
+        id: build
+        run: python scripts/build.py
+        env:
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: deploy
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      # 공개 저장소의 예약 실행은 커밋이 60일 없으면 GitHub가 멈춘다. 45일마다 빈 커밋 대신 파일 하나를 갱신한다.
+      - name: keepalive
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 45 ]; then
+            date -u +%FT%TZ > .keepalive
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .keepalive
+            git commit -m "keepalive"
+            git push
+          fi
+
+      - name: fail on critical data errors
+        if: steps.build.outputs.critical != '0'
+        run: |
+          echo "a whole data section failed this run; previous values were kept"
+          exit 1
