@@ -1,0 +1,9 @@
+name = "biyeom-yebo-trigger"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+# 공개 주소는 필요 없다(예약 실행만 쓴다)
+workers_dev = false
+
+[triggers]
+# UTC 기준이지만 분만 쓰므로 KST 도 매시 35·55분
+crons = ["35,55 * * * *"]

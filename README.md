@@ -1,6 +1,6 @@
 # biyeom-yebo-data
 
-비염예보 앱이 받는 공공데이터 묶음. GitHub Actions가 매시 35분·55분에 공공데이터포털 API를 불러 시군구별 JSON을 만들고 GitHub Pages로 배포한다. 앱은 이 파일 하나만 받으므로 사용자가 늘어도 API 호출 수는 그대로다.
+비염예보 앱이 받는 공공데이터 묶음. 매시 35분·55분에 Cloudflare Worker(`trigger/`)가 GitHub Actions를 깨우면, Actions가 공공데이터포털 API를 불러 시군구별 JSON을 만들고 GitHub Pages로 배포한다. 앱은 이 파일 하나만 받으므로 사용자가 늘어도 API 호출 수는 그대로다.
 
 - 배포 주소: https://misoboy.github.io/biyeom-yebo-data/v1/latest.json
 - 지역 목록: https://misoboy.github.io/biyeom-yebo-data/v1/regions.json (앱에도 같은 파일이 들어 있음)
@@ -32,6 +32,21 @@
 - 미세먼지 등급(g10, g25)은 1 좋음 · 2 보통 · 3 나쁨 · 4 매우나쁨. 지역 중심에서 40km 안의 가장 가까운 측정소 값을 쓴다.
 - 기온 배열은 base 날짜부터 4일치 [최저, 최고].
 - 일부 지역 호출이 실패하면 이전 배포본의 값을 그대로 둔다. 한 부분이 통째로 실패하면 작업이 실패로 표시되어 메일이 온다.
+
+## 실행 방아쇠 (trigger/)
+
+GitHub Actions의 `schedule` 트리거는 이 계정에서 매일 6~9시간씩 늦고, 매시간 예약은 아예 돌지 않았다(2026-11-26, `misoboy/misoboy`의 0시 예약이 05:46~09:01 UTC에 돈 기록으로 확인).
+그래서 Cloudflare Workers 예약 실행(무료)이 매시 35·55분에 `workflow_dispatch`를 보낸다. 수동 실행은 바로 시작된다. 워크플로의 `schedule`은 보조로 남겨 두었다(늦게 돌아도 해가 없다).
+
+- Worker: `biyeom-yebo-trigger` (Cloudflare 계정 misoboy, 공개 주소 꺼짐), 비밀 값 `GITHUB_TOKEN`
+- `GITHUB_TOKEN`: fine-grained PAT `biyeom-yebo-trigger` — 이 저장소만, Actions 읽기·쓰기. **2027-11-26께 만료**되니 그 전에 다시 만들어 넣는다:
+  ```bash
+  cd trigger && npx wrangler login   # 브라우저 승인
+  npx wrangler secret put GITHUB_TOKEN < ~/secrets/github/biyeom-dispatch-token.txt
+  npx wrangler logout
+  ```
+- 토큰이 만료되거나 Worker가 멈추면 데이터 갱신이 멈춘다(앱은 마지막 값과 갱신 시각을 보여준다). 확인: `gh run list --event workflow_dispatch -L 5`
+- 다시 배포: `cd trigger && npx wrangler deploy`
 
 ## 설정
 
