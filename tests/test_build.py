@@ -90,6 +90,48 @@ class Pollen(unittest.TestCase):
         self.assertIs(p, prev["pollen"])
 
 
+class AirForecast(unittest.TestCase):
+    def setUp(self):
+        self.orig = build.call
+        build.errors.clear()
+
+    def tearDown(self):
+        build.call = self.orig
+
+    def test_every_region_has_a_zone(self):
+        zones = {build.air_zone(r) for r in build.REGIONS}
+        self.assertEqual(len(zones), 19)
+
+    def test_split_provinces(self):
+        by_name = {(r["sido"][:2], r["name"]): build.air_zone(r) for r in build.REGIONS}
+        self.assertEqual(by_name[("경기", "파주시")], "경기북부")
+        self.assertEqual(by_name[("경기", "수원시장안구")], "경기남부")
+        self.assertEqual(by_name[("강원", "강릉시")], "영동")
+        self.assertEqual(by_name[("강원", "춘천시")], "영서")
+        self.assertEqual(by_name[("전남", "광산구")], "광주")
+        self.assertEqual(by_name[("전남", "목포시")], "전남")
+
+    def test_latest_issue_wins_and_spreads_to_regions(self):
+        def item(issue, code, target, seoul):
+            return {"dataTime": f"2026-11-26 {issue}시 발표", "informCode": code, "informData": target,
+                    "informGrade": f"서울 : {seoul},제주 : 좋음,경기북부 : 나쁨"}
+        items = [item("11", "PM10", "2026-11-27", "좋음"), item("17", "PM10", "2026-11-27", "나쁨"),
+                 item("17", "PM25", "2026-11-27", "보통"), item("17", "PM10", "2026-11-28", "매우나쁨")]
+        build.call = lambda *a, **k: {"response": {"body": {"items": items}}}
+        f = build.build_air_forecast(datetime(2026, 11, 26, 18, tzinfo=KST), None)
+        self.assertEqual(f["issued"], "2026112617")
+        self.assertEqual(f["areas"]["1111000000"]["20261127"], [3, 2])  # 17시 발표가 11시 발표를 덮는다
+        self.assertEqual(f["areas"]["1111000000"]["20261128"], [4, None])
+        self.assertEqual(build.errors, [])
+
+    def test_failure_keeps_previous(self):
+        def boom(*a, **k):
+            raise RuntimeError("down")
+        build.call = boom
+        prev = {"airFcst": {"issued": "2026112611", "areas": {"1111000000": {"20261127": [2, 2]}}}}
+        self.assertIs(build.build_air_forecast(datetime(2026, 11, 26, 18, tzinfo=KST), prev), prev["airFcst"])
+
+
 class Geo(unittest.TestCase):
     def test_km(self):
         # 서울시청 ~ 부산시청 약 325km

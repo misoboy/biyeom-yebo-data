@@ -43,6 +43,31 @@ POLLEN_BASE = "https://apis.data.go.kr/1360000/HealthWthrIdxServiceV3/"
 AIR_URL = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getCtprvnRltmMesureDnsty"
 STATION_URL = "https://apis.data.go.kr/B552584/MsrstnInfoInqireSvc/getMsrstnList"
 FCST_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+AIR_FCST_URL = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getMinuDustFrcstDspth"
+AIR_GRADE = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
+
+# 에어코리아 대기질 예보 권역(19곳). 시도로 정해지지 않는 곳만 시군구 이름으로 나눈다.
+# 경기 북부는 한강 북쪽(김포 포함)으로 잡았다. 남·북부 등급이 다른 날은 드물어 경계가 조금 틀려도 영향이 작다.
+GYEONGGI_NORTH = ("의정부", "동두천", "고양", "구리", "남양주", "파주", "양주", "포천", "연천", "가평", "김포")
+GANGWON_EAST = ("강릉", "동해", "태백", "속초", "삼척", "고성", "양양")
+GWANGJU_GU = ("동구", "서구", "남구", "북구", "광산구")  # 전남광주통합특별시 안의 옛 광주광역시
+
+
+def air_zone(region: dict) -> str:
+    sido, name = region["sido"], region["name"]
+    if sido.startswith("경기"):
+        return "경기북부" if name.startswith(GYEONGGI_NORTH) else "경기남부"
+    if sido.startswith("강원"):
+        return "영동" if name.startswith(GANGWON_EAST) else "영서"
+    if sido.startswith("전남") or sido.startswith("전라남"):
+        return "광주" if name in GWANGJU_GU else "전남"
+    for prefix, zone in (("서울", "서울"), ("부산", "부산"), ("대구", "대구"), ("인천", "인천"), ("광주", "광주"),
+                         ("대전", "대전"), ("울산", "울산"), ("세종", "세종"), ("충청북", "충북"), ("충북", "충북"),
+                         ("충청남", "충남"), ("충남", "충남"), ("전북", "전북"), ("전라북", "전북"),
+                         ("경상북", "경북"), ("경북", "경북"), ("경상남", "경남"), ("경남", "경남"), ("제주", "제주")):
+        if sido.startswith(prefix):
+            return zone
+    raise ValueError(f"no air forecast zone for {sido} {name}")
 MAX_STATION_KM = 40.0
 
 errors: list[str] = []
@@ -228,6 +253,69 @@ def build_air(now: datetime, prev: dict | None, stations: list[dict]) -> dict:
     return {"time": data_time, "areas": areas}
 
 
+# ---------- 대기질 예보 (내일·모레) ----------
+
+def parse_issue(data_time: str) -> str:
+    """'2026-11-26 17시 발표' → '2026112617' (정렬용)"""
+    digits = "".join(ch for ch in data_time if ch.isdigit())
+    return digits[:10]
+
+
+def parse_zone_grades(text: str) -> dict[str, int]:
+    out = {}
+    for part in (text or "").split(","):
+        if ":" in part:
+            zone, grade = (s.strip() for s in part.split(":", 1))
+            if grade in AIR_GRADE:
+                out[zone] = AIR_GRADE[grade]
+    return out
+
+
+def build_air_forecast(now: datetime, prev: dict | None) -> dict:
+    """권역별 PM10·PM2.5 예보 등급을 시군구로 펼친다. 05·11·17·23시 발표, 17시 발표부터 모레까지 나온다."""
+    prev_f = (prev or {}).get("airFcst") or {}
+    days = [now.strftime("%Y-%m-%d")]
+    if now.hour < 6:  # 05시 발표 전에는 어제 17·23시 발표분이 최신
+        days.append((now - timedelta(days=1)).strftime("%Y-%m-%d"))
+    items = []
+    try:
+        for day in days:
+            d = call(AIR_FCST_URL, {"returnType": "json", "numOfRows": 100, "pageNo": 1, "searchDate": day})
+            items += d["response"]["body"]["items"] or []
+    except Exception as e:
+        errors.append(f"airFcst: {e}")
+        return prev_f
+    # (종류, 대상일)마다 가장 최근 발표분만 쓴다
+    latest: dict[tuple[str, str], tuple[str, dict[str, int]]] = {}
+    for it in items:
+        code, target = it.get("informCode"), (it.get("informData") or "").replace("-", "")
+        if code not in ("PM10", "PM25") or len(target) != 8:
+            continue
+        issue = parse_issue(it.get("dataTime") or "")
+        grades = parse_zone_grades(it.get("informGrade"))
+        if grades and (key := (code, target)) and (key not in latest or issue > latest[key][0]):
+            latest[key] = (issue, grades)
+    if not latest:
+        errors.append("airFcst: no forecast items")
+        return prev_f
+    today = now.strftime("%Y%m%d")
+    targets = sorted({t for _, t in latest if t >= today})
+    areas = {}
+    for r in REGIONS:
+        zone = air_zone(r)
+        per_day = {}
+        for t in targets:
+            g10 = latest.get(("PM10", t), (None, {}))[1].get(zone)
+            g25 = latest.get(("PM25", t), (None, {}))[1].get(zone)
+            if g10 is not None or g25 is not None:
+                per_day[t] = [g10, g25]
+        if per_day:
+            areas[r["code"]] = per_day
+    issued = max(v[0] for v in latest.values())
+    log(f"airFcst: issued {issued}, days {targets}, {len(areas)} areas")
+    return {"issued": issued, "areas": areas}
+
+
 # ---------- 기온 ----------
 
 def build_temp(now: datetime, prev: dict | None) -> dict:
@@ -300,6 +388,7 @@ def main() -> int:
         "generatedAt": now.isoformat(timespec="seconds"),
         "pollen": build_pollen(now, prev),
         "air": build_air(now, prev, stations.get("stations") or []),
+        "airFcst": build_air_forecast(now, prev),
         "temp": build_temp(now, prev),
         "errors": errors,
         "source": "기상청, 한국환경공단(에어코리아) — 공공데이터포털. 에어코리아 실시간 자료는 미확정 자료입니다.",
